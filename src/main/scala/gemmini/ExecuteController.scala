@@ -45,6 +45,7 @@ class ExecuteController[T <: Data, U <: Data, V <: Data](xLen: Int, tagWidth: In
     val busy = Output(Bool())
 
     val counter = new CounterEventIO()
+    val profile = new ProfileEventIO(ROB_ID_WIDTH)
   })
 
   val block_size = meshRows*tileRows
@@ -1024,6 +1025,9 @@ class ExecuteController[T <: Data, U <: Data, V <: Data](xLen: Int, tagWidth: In
     !(!cntl.b_fire || mesh.io.b.fire || !mesh.io.b.ready) && !cntl.b_read_from_acc)
   io.counter.connectEventSignal(CounterEvent.SCRATCHPAD_D_WAIT_CYCLE,
     !(!cntl.d_fire || mesh.io.d.fire || !mesh.io.d.ready) && !cntl.d_read_from_acc)
+
+  // Profile Counter
+  ProfileEventIO.init(io.profile)
 
   if (use_firesim_simulation_counters) {
     val ex_flush_cycle = control_state === flushing || control_state === flush

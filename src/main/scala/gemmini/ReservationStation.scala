@@ -33,6 +33,8 @@ class ReservationStation[T <: Data : Arithmetic, U <: Data, V <: Data](config: G
   val max_instructions_completed_per_type_per_cycle = 2 // Every cycle, at most two instructions of a single "type" (ld/st/ex) can be completed: one through the io.completed port, and the other if it is a "complete-on-issue" instruction
 
   val io = IO(new Bundle {
+    val clk_cnt = Input(UInt(64.W))
+    
     val alloc = Flipped(Decoupled(cmd_t.cloneType))
 
     val completed = Flipped(Valid(UInt(ROB_ID_WIDTH.W)))
@@ -54,6 +56,7 @@ class ReservationStation[T <: Data : Arithmetic, U <: Data, V <: Data](config: G
     val busy = Output(Bool())
 
     val counter = new CounterEventIO()
+    val profile = new ProfileIO(cmd_t, ROB_ID_WIDTH)
   })
 
   // TODO make this a ChiselEnum
@@ -71,6 +74,18 @@ class ReservationStation[T <: Data : Arithmetic, U <: Data, V <: Data](config: G
         !(start.is_garbage() || other.start.is_garbage()) // TODO the "is_garbage" check might not really be necessary
     }
   }
+
+  val issue_cmd = Wire(new ReservationStationIssue(cmd_t, ROB_ID_WIDTH))
+  
+  issue_cmd := DontCare
+  issue_cmd.valid := false.B
+  
+  io.profile.issue_cmd.valid := issue_cmd.valid
+  io.profile.issue_cmd.cmd := issue_cmd.cmd
+  io.profile.issue_cmd.rob_id := issue_cmd.rob_id
+
+  val clk_cnt = Wire(UInt(32.W))
+  clk_cnt := io.clk_cnt
 
   val instructions_allocated = RegInit(0.U(32.W))
   when (io.alloc.fire) {
@@ -133,7 +148,7 @@ class ReservationStation[T <: Data : Arithmetic, U <: Data, V <: Data](config: G
   val utilization = PopCount(entries.map(e => e.valid)) // TODO it may be cheaper to count the utilization in a register, rather than performing a PopCount
   val solitary_preload = RegInit(false.B) // This checks whether or not the reservation station received a "preload" instruction, but hasn't yet received the following "compute" instruction
   io.busy := !empty && !(utilization === 1.U && solitary_preload)
-  
+
   // Tell the conv and matmul FSMs if any of their issued instructions completed
   val conv_ld_issue_completed = WireInit(false.B)
   val conv_st_issue_completed = WireInit(false.B)
@@ -355,6 +370,11 @@ class ReservationStation[T <: Data : Arithmetic, U <: Data, V <: Data](config: G
           val alloc_id = MuxCase((entries_count - 1).U, entries_type.zipWithIndex.map { case (e, i) => !e.valid -> i.U })
 
           when (!entries_type(alloc_id).valid) {
+            // FIX ME: Does it behave correctly?
+            issue_cmd.cmd := new_entry.cmd
+            issue_cmd.rob_id := Cat(q.asUInt, alloc_id.pad(log2Up(res_max_per_type)))
+            issue_cmd.valid := true.B
+            // printf("[Cycle=%d] [ROB ID=%d] [cmd=0x%x]\n\n", clk_cnt, issue_cmd.rob_id, issue_cmd.cmd.cmd.inst.asUInt)
             io.alloc.ready := true.B
             entries_type(alloc_id).valid := true.B
             entries_type(alloc_id).bits := new_entry
@@ -456,7 +476,7 @@ class ReservationStation[T <: Data : Arithmetic, U <: Data, V <: Data](config: G
     when (queue_type === ldq) {
       entries.foreach(_.bits.deps_ld(issue_id) := false.B)
       entries_ld(issue_id).valid := false.B
-
+      //printf("[gemmini] complete mvin inst\n")
       conv_ld_completed := entries_ld(issue_id).bits.cmd.from_conv_fsm
       matmul_ld_completed := entries_ld(issue_id).bits.cmd.from_matmul_fsm
 
@@ -464,7 +484,7 @@ class ReservationStation[T <: Data : Arithmetic, U <: Data, V <: Data](config: G
     }.elsewhen (queue_type === exq) {
       entries.foreach(_.bits.deps_ex(issue_id) := false.B)
       entries_ex(issue_id).valid := false.B
-
+      //printf("[gemmini] complete execute inst\n")
       conv_ex_completed := entries_ex(issue_id).bits.cmd.from_conv_fsm
       matmul_ex_completed := entries_ex(issue_id).bits.cmd.from_matmul_fsm
       
@@ -472,7 +492,7 @@ class ReservationStation[T <: Data : Arithmetic, U <: Data, V <: Data](config: G
     }.elsewhen (queue_type === stq) {
       entries.foreach(_.bits.deps_st(issue_id) := false.B)
       entries_st(issue_id).valid := false.B
-
+      //printf("[gemmini] complete store inst\n")
       conv_st_completed := entries_st(issue_id).bits.cmd.from_conv_fsm
       matmul_st_completed := entries_st(issue_id).bits.cmd.from_matmul_fsm
       
@@ -568,4 +588,8 @@ class ReservationStation[T <: Data : Arithmetic, U <: Data, V <: Data](config: G
   io.counter.connectExternalCounter(CounterExternal.RESERVATION_STATION_EX_COUNT, utilization_ex_q)
   io.counter.connectEventSignal(CounterEvent.RESERVATION_STATION_ACTIVE_CYCLES, io.busy)
   io.counter.connectEventSignal(CounterEvent.RESERVATION_STATION_FULL_CYCLES, !io.alloc.ready)
+  
+  // TODO: Can we completely decouple reservation station and profiler?
+  ProfileEventIO.init(io.profile.event_io)
+  // io.profile.event_io.connectEventSignal(ProfileEvent.ROB_ALLOC, io.alloc.fire, issue_cmd.rob_id)
 }

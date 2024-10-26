@@ -64,6 +64,11 @@ class GemminiModule[T <: Data: Arithmetic, U <: Data, V <: Data]
   counters.io.in.bits := DontCare
   counters.io.event_io.collect(spad.module.io.counter)
 
+  // Profiler
+  val profilers = Module(new ProfilerController(outer.config, new GemminiCmd(reservation_station_entries)))
+  ProfileEventIO.init(profilers.io.profile_io.event_io)
+
+
   // TLB
   implicit val edge = outer.spad.id_node.edges.out.head
   val tlb = Module(new FrontendTLB(2, tlb_size, dma_maxbytes, use_tlb_register_filter, use_firesim_simulation_counters, use_shared_tlb))
@@ -123,7 +128,19 @@ class GemminiModule[T <: Data: Arithmetic, U <: Data, V <: Data]
 
   val reservation_station = withClock (gated_clock) { Module(new ReservationStation(outer.config, new GemminiCmd(reservation_station_entries))) }
   counters.io.event_io.collect(reservation_station.io.counter)
+  profilers.io.profile_io.issue_cmd <> reservation_station.io.profile.issue_cmd
+  profilers.io.profile_io.event_io.collect(reservation_station.io.profile.event_io)
+  profilers.io.profile_io.event_io.connectEventSignal(ProfileEvent.ROB_ALLOC, reservation_station.io.profile.issue_cmd.fire(), reservation_station.io.profile.issue_cmd.rob_id)
+  profilers.io.profile_io.event_io.connectEventSignal(ProfileEvent.ROB_ISSUE_LD, reservation_station.io.issue.ld.fire(), reservation_station.io.issue.ld.rob_id)
+  profilers.io.profile_io.event_io.connectEventSignal(ProfileEvent.ROB_ISSUE_EX, reservation_station.io.issue.ex.fire(), reservation_station.io.issue.ex.rob_id)
+  profilers.io.profile_io.event_io.connectEventSignal(ProfileEvent.ROB_ISSUE_ST, reservation_station.io.issue.st.fire(), reservation_station.io.issue.st.rob_id)
+  profilers.io.profile_io.event_io.connectEventSignal(ProfileEvent.ROB_COMPLETE, reservation_station.io.completed.fire, reservation_station.io.completed.bits)
 
+  val clk_cnt = RegInit(0.U(32.W))
+  clk_cnt := clk_cnt + 1.U
+  reservation_station.io.clk_cnt := clk_cnt
+  
+  
   when (io.cmd.valid && io.cmd.bits.inst.funct === CLKGATE_EN && !io.busy) {
     clock_en_reg := io.cmd.bits.rs1(0)
   }
@@ -192,6 +209,29 @@ class GemminiModule[T <: Data: Arithmetic, U <: Data, V <: Data]
   counters.io.event_io.collect(load_controller.io.counter)
   counters.io.event_io.collect(store_controller.io.counter)
   counters.io.event_io.collect(ex_controller.io.counter)
+
+  /* First Enter Corresponding Controller */
+  profilers.io.profile_io.event_io.connectEventSignal(ProfileEvent.ENTER_LD_CTRL, load_controller.io.cmd.fire, load_controller.io.cmd.bits.rob_id.bits)
+  profilers.io.profile_io.event_io.connectEventSignal(ProfileEvent.ENTER_EX_CTRL, ex_controller.io.cmd.fire, ex_controller.io.cmd.bits.rob_id.bits)
+  profilers.io.profile_io.event_io.connectEventSignal(ProfileEvent.ENTER_ST_CTRL, store_controller.io.cmd.fire, store_controller.io.cmd.bits.rob_id.bits)
+
+  /* Finally Leave Conrresponding Controller */
+  profilers.io.profile_io.event_io.connectEventSignal(ProfileEvent.LEAVE_LD_CTRL, load_controller.io.completed.fire, load_controller.io.completed.bits)
+  profilers.io.profile_io.event_io.connectEventSignal(ProfileEvent.LEAVE_EX_CTRL, ex_controller.io.completed.fire, ex_controller.io.completed.bits)
+  profilers.io.profile_io.event_io.connectEventSignal(ProfileEvent.LEAVE_ST_CTRL, store_controller.io.completed.fire, store_controller.io.completed.bits)
+
+  // // /* DMA Read - Load Controller */
+  // profilers.io.profile_io.event_io.connectEventSignal(ProfileEvent.ENTER_DMA_READ, load_controller.io.dma.req.fire, load_controller.io.dma.req.bits.cmd_id)
+  // profilers.io.profile_io.event_io.connectEventSignal(ProfileEvent.LEAVE_DMA_READ, load_controller.io.dma.resp.fire, load_controller.io.dma.req.bits.cmd_id)
+
+  // // /* DMA Write - Store Controller */
+  // profilers.io.profile_io.event_io.connectEventSignal(ProfileEvent.ENTER_DMA_WRITE, store_controller.io.dma.req.fire, store_controller.io.dma.req.bits.cmd_id)
+  // profilers.io.profile_io.event_io.connectEventSignal(ProfileEvent.LEAVE_DMA_WRITE, store_controller.io.dma.resp.fire, store_controller.io.dma.resp.bits.cmd_id)
+
+  /* Internal Operations of Corresponding Controller */
+  profilers.io.profile_io.event_io.collect(load_controller.io.profile)
+  profilers.io.profile_io.event_io.collect(ex_controller.io.profile)
+  profilers.io.profile_io.event_io.collect(store_controller.io.profile)
 
   /*
   tiler.io.issue.load.ready := false.B

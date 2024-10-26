@@ -25,6 +25,7 @@ class LoadController[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig
     val busy = Output(Bool())
 
     val counter = new CounterEventIO()
+    val profile = new ProfileEventIO(ROB_ID_WIDTH)
   })
 
   val waiting_for_command :: waiting_for_dma_req_ready :: sending_rows :: Nil = Enum(3)
@@ -183,6 +184,14 @@ class LoadController[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig
 
   if (use_firesim_simulation_counters) {
     PerfCounter(io.dma.req.valid && !io.dma.req.ready, "load_dma_wait_cycle", "cycles during which load controller is waiting for DMA to be available")
+  }
+
+  // Profiler
+  ProfileEventIO.init(io.profile)
+  io.profile.connectEventSignal(ProfileEvent.LD_CTRL_EXECUTE, cmd.fire, cmd.bits.rob_id.bits)
+
+  when(cmd.fire){
+    printf("[%d][%d]\n", cmd.bits.cmd.inst.asUInt, cmd.bits.rob_id.bits)
   }
 
   // Assertions
